@@ -24,10 +24,19 @@
                 <button id="zoom-out" class="top-bar-btn"><i class="fa-solid fa-magnifying-glass-minus"></i></button>
                 <button id="fit-to-screen" class="top-bar-btn"><i class="fa-solid fa-expand"></i> Fit</button>
             </div>
-            <div class="actions">
-                <button id="save-annotations" class="top-bar-btn primary"><i class="fa-solid fa-save"></i> Save</button>
-                <button id="dark-mode-toggle" class="top-bar-btn"><i class="fa-solid fa-circle-half-stroke"></i></button>
-            </div>
+           <div class="actions">
+    <!-- New Export Dropdown/Buttons -->
+    <div class="dropdown">
+        <button class="top-bar-btn" title="Export Dataset"><i class="fa-solid fa-download"></i> Export</button>
+        <div class="dropdown-content">
+            {% comment %} <a href="{% url 'export_yolo' %}" target="_blank">YOLO (TXT)</a> {% endcomment %}
+            <a href="{% url 'export_coco' %}" target="_blank">COCO (JSON)</a>
+        </div>
+    </div>
+
+    <button id="save-annotations" class="top-bar-btn primary"><i class="fa-solid fa-save"></i> Save</button>
+    {% comment %} <button id="dark-mode-toggle" class="top-bar-btn"><i class="fa-solid fa-circle-half-stroke"></i></button> {% endcomment %}
+</div>
         </div>
 
         <div class="main-content">
@@ -41,6 +50,9 @@
                     <button class="tool-btn" data-tool="rectangle" title="Rectangle (R)"><i class="fa-solid fa-vector-square"></i></button>
                     <button class="tool-btn" data-tool="circle" title="Circle (C)"><i class="fa-solid fa-circle-dot"></i></button>
                     <button class="tool-btn" data-tool="eraser" title="Eraser (E)"><i class="fa-solid fa-eraser"></i></button>
+                    <button class="tool-btn" id="btn-auto-detect" title="Auto-Detect Objects (AI)">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i>
+                    </button>
                 </div>
                 <div class="tool-options">
                     <div id="brush-options" class="tool-option-group hidden">
