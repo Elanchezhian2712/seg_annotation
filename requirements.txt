@@ -1,0 +1,40 @@
+# ===================================================================
+# requirements.txt
+# Distribution setup for 100+ Users (Offline / Pre-compiled)
+# ===================================================================
+
+# --- 1. Web Framework & Database ---
+django>=5.0
+psycopg2-binary    # For PostgreSQL
+Pillow             # Image handling
+
+# --- 2. Scientific & Image Processing ---
+numpy
+matplotlib
+scipy
+opencv-python-headless
+PyYAML
+requests
+timm
+shapely
+
+# --- 3. Segmentation Libraries (Standard) ---
+segmentation-models-pytorch
+ultralytics  # For SAM (Segment Anything)
+
+# --- 4. OFFLINE WHEELS (Pre-Compiled) ---
+# These files MUST exist in the 'wheels' folder.
+# USERS: Do not change these lines.
+
+# PyTorch Family (The heavy files)
+./wheels/torch-2.5.1+cu121-cp310-cp310-win_amd64.whl
+./wheels/torchvision-0.20.1+cu121-cp310-cp310-win_amd64.whl
+./wheels/torchaudio-2.5.1+cu121-cp310-cp310-win_amd64.whl
+
+# OpenMMLab Family
+./wheels/mmengine-0.10.3-py3-none-any.whl
+./wheels/mmcv-2.1.0-cp310-cp310-win_amd64.whl
+./wheels/mmsegmentation-1.2.2-py3-none-any.whl
+
+# Detectron2 (Compiled by Admin)
+./wheels/detectron2-0.6-cp310-cp310-win_amd64.whl

@@ -1,0 +1,41 @@
+# ===================================================================
+# requirements.txt
+# For a unified installation of top segmentation libraries (2025)
+#
+# --- INSTALLATION INSTRUCTIONS ---
+# 1. Install PyTorch MANUALLY first using the command from the official website:
+#    https://pytorch.org/get-started/locally/
+#
+# 2. After PyTorch is installed, run:
+#    pip install -r requirements.txt
+#
+# Note: The Detectron2 installation will compile C++/CUDA code, which may
+#       take several minutes and requires a C++ compiler (like g++ or MSVC).
+# ===================================================================
+
+# --- Core Segmentation Libraries ---
+
+# 1. MMSegmentation and its core dependencies
+# This will automatically pull in mmengine and mmcv
+mmsegmentation>=1.0.0
+
+# 2. Detectron2 (installed from its official repository)
+# This method ensures it compiles correctly for your system's PyTorch/CUDA versions.
+#git+https://github.com/facebookresearch/detectron2.git
+
+# 3. Segmentation Models PyTorch (SMP)
+segmentation-models-pytorch
+
+# 4. Ultralytics (for using Segment Anything Model - SAM)
+ultralytics
+
+# --- Common Dependencies & Utilities ---
+# These are often required by the libraries above but are listed for clarity.
+
+matplotlib
+PyYAML
+scipy
+requests
+opencv-python-headless  
+timm                    
+psycopg2-binary
