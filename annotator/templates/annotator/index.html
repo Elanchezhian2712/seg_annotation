@@ -1,107 +1,220 @@
 {% load static %}
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Advanced Image Annotation Tool</title>
-    <link rel="stylesheet" href="{% static 'annotator/css/styles.css' %}">
+    <link rel="stylesheet" href="{% static 'annotator/css/styles.css' %}" />
     <!-- Add Font Awesome for icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-</head>
-<body class="dark-mode">
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+    />
+  </head>
+  <body class="dark-mode">
     <div class="container">
-        <!-- TOP BAR: File ops, controls, and main actions -->
-        <div class="top-bar">
-            <div class="file-ops">
-                <label for="image-upload" class="top-bar-btn"><i class="fa-solid fa-upload"></i> Upload</label>
-                <input type="file" id="image-upload" accept="image/jpeg,image/png,image/webp" hidden>
-            </div>
-            <div class="controls">
-                <button id="undo" class="top-bar-btn"><i class="fa-solid fa-rotate-left"></i> Undo</button>
-                <button id="redo" class="top-bar-btn"><i class="fa-solid fa-rotate-right"></i> Redo</button>
-                <button id="zoom-in" class="top-bar-btn"><i class="fa-solid fa-magnifying-glass-plus"></i></button>
-                <button id="zoom-out" class="top-bar-btn"><i class="fa-solid fa-magnifying-glass-minus"></i></button>
-                <button id="fit-to-screen" class="top-bar-btn"><i class="fa-solid fa-expand"></i> Fit</button>
-            </div>
-           <div class="actions">
-    <!-- New Export Dropdown/Buttons -->
-    <div class="dropdown">
-        <button class="top-bar-btn" title="Export Dataset"><i class="fa-solid fa-download"></i> Export</button>
-        <div class="dropdown-content">
-            {% comment %} <a href="{% url 'export_yolo' %}" target="_blank">YOLO (TXT)</a> {% endcomment %}
-            <a href="{% url 'export_coco' %}" target="_blank">COCO (JSON)</a>
+      <!-- TOP BAR: File ops, controls, and main actions -->
+      <div class="top-bar">
+        <div class="file-ops">
+          <label for="image-upload" class="top-bar-btn"
+            ><i class="fa-solid fa-upload"></i> Upload</label
+          >
+          <input
+            type="file"
+            id="image-upload"
+            accept="image/jpeg,image/png,image/webp"
+            hidden
+          />
         </div>
-    </div>
-
-    <button id="save-annotations" class="top-bar-btn primary"><i class="fa-solid fa-save"></i> Save</button>
-    {% comment %} <button id="dark-mode-toggle" class="top-bar-btn"><i class="fa-solid fa-circle-half-stroke"></i></button> {% endcomment %}
-</div>
+        <div class="controls">
+          <button id="undo" class="top-bar-btn">
+            <i class="fa-solid fa-rotate-left"></i> Undo
+          </button>
+          <button id="redo" class="top-bar-btn">
+            <i class="fa-solid fa-rotate-right"></i> Redo
+          </button>
+          <button id="zoom-in" class="top-bar-btn">
+            <i class="fa-solid fa-magnifying-glass-plus"></i>
+          </button>
+          <button id="zoom-out" class="top-bar-btn">
+            <i class="fa-solid fa-magnifying-glass-minus"></i>
+          </button>
+          <button id="fit-to-screen" class="top-bar-btn">
+            <i class="fa-solid fa-expand"></i> Fit
+          </button>
         </div>
-
-        <div class="main-content">
-            <!-- TOOLBAR: Annotation tools and their options -->
-            <div class="toolbar">
-    <h3>AI Tools</h3>
-    
-    <!-- THE MAGIC INPUT BOX -->
-    <div style="background: #2a2a2a; padding: 10px; border-radius: 6px; margin-bottom: 15px; border: 1px solid #444;">
-        <label style="font-size: 11px; color: #aaa; display: block; margin-bottom: 5px;">Find Objects (comma separated):</label>
-        
-        <textarea id="ai-prompt" rows="3" 
-            style="width: 100%; background: #333; color: white; border: 1px solid #555; padding: 5px; border-radius: 4px; font-size: 12px; resize: vertical;"
-        >car, bike, person, tree, cloud</textarea>
-        
-        <button class="tool-btn primary" id="btn-auto-detect" title="Run Auto-Detect" 
-                style="width: 100%; margin-top: 8px; background: #3b82f6; color: white; justify-content: center;">
-            <i class="fa-solid fa-wand-magic-sparkles"></i> Detect All
-        </button>
-    </div>
-
-    <h3>Manual Tools</h3>
-    <div class="tools-main">
-        <button class="tool-btn" data-tool="select" title="Select (V)"><i class="fa-solid fa-arrow-pointer"></i></button>
-        <button class="tool-btn" data-tool="pan" title="Pan (H)"><i class="fa-solid fa-hand"></i></button>
-        <button class="tool-btn" data-tool="polygon" title="Polygon (P)"><i class="fa-solid fa-draw-polygon"></i></button>
-        <button class="tool-btn" data-tool="rectangle" title="Rectangle (R)"><i class="fa-solid fa-vector-square"></i></button>
-        <button class="tool-btn" data-tool="circle" title="Circle (C)"><i class="fa-solid fa-circle-dot"></i></button>
-        <button class="tool-btn" data-tool="brush" title="Brush (B)"><i class="fa-solid fa-paintbrush"></i></button>
-        <button class="tool-btn" data-tool="eraser" title="Eraser (E)"><i class="fa-solid fa-eraser"></i></button>
-    </div>
-    
-    <!-- ... keep your brush options div here ... -->
-    <div class="tool-options">
-        <div id="brush-options" class="tool-option-group hidden">
-            <label for="brush-size">Size: <span id="brush-size-label">10</span></label>
-            <input type="range" id="brush-size" min="1" max="100" value="10">
-            <label for="brush-color">Color:</label>
-            <input type="color" id="brush-color" value="#FF33A1">
-        </div>
-    </div>
-</div>
-
-            <!-- CANVAS CONTAINER -->
-            <div class="canvas-container">
-                <canvas id="canvas"></canvas>
+        <div class="actions">
+          <!-- New Export Dropdown/Buttons -->
+          <!-- Replace your Dropdown Div with this -->
+          <div class="dropdown">
+            <button class="top-bar-btn" title="Export Dataset">
+              <i class="fa-solid fa-download"></i> Export
+            </button>
+            <div class="dropdown-content">
+              <div
+                style="
+                  padding: 8px 16px;
+                  font-weight: bold;
+                  color: #888;
+                  border-bottom: 1px solid #444;
+                  background: #222;
+                "
+              >
+                Detection
+              </div>
+              <a href="{% url 'export_yolo' %}" target="_blank">YOLO (Txt)</a>
+              <a href="{% url 'export_coco' %}" target="_blank">COCO (JSON)</a>
+              
+              
             </div>
+          </div>
 
-            <!-- SIDEBAR: Layers and attributes panel -->
-            <div class="sidebar">
-                <h3><i class="fa-solid fa-layer-group"></i> Layers</h3>
-                <ul id="layers-list">
-                    <!-- Layers will be dynamically inserted here -->
-                </ul>
-                <div id="attributes-panel" class="hidden">
-                    <h3><i class="fa-solid fa-tags"></i> Attributes</h3>
-                    <input type="text" id="attr-label" placeholder="Label (e.g., car_1)">
-                    <input type="text" id="attr-class" placeholder="Class (e.g., vehicle)">
-                    <button id="save-attributes">Save Attributes</button>
-                </div>
-            </div>
+          <button id="save-annotations" class="top-bar-btn primary">
+            <i class="fa-solid fa-save"></i> Save
+          </button>
+          {% comment %}
+          <button id="dark-mode-toggle" class="top-bar-btn">
+            <i class="fa-solid fa-circle-half-stroke"></i>
+          </button>
+          {% endcomment %}
         </div>
+      </div>
+
+      <div class="main-content">
+        <!-- TOOLBAR: Annotation tools and their options -->
+        <div class="toolbar">
+          {% comment %} <h3>AI Tools</h3> {% endcomment %}
+
+          <!-- THE MAGIC INPUT BOX -->
+          {% comment %} <div
+            style="
+              background: #2a2a2a;
+              padding: 10px;
+              border-radius: 6px;
+              margin-bottom: 15px;
+              border: 1px solid #444;
+            "
+          >
+            <label
+              style="
+                font-size: 11px;
+                color: #aaa;
+                display: block;
+                margin-bottom: 5px;
+              "
+              >Find Objects (comma separated):</label
+            >
+
+            <textarea
+              id="ai-prompt"
+              rows="3"
+              style="
+                width: 100%;
+                background: #333;
+                color: white;
+                border: 1px solid #555;
+                padding: 5px;
+                border-radius: 4px;
+                font-size: 12px;
+                resize: vertical;
+              "
+            ></textarea>
+
+            <button
+              class="tool-btn primary"
+              id="btn-auto-detect"
+              title="Run Auto-Detect"
+              style="
+                width: 100%;
+                margin-top: 8px;
+                background: #3b82f6;
+                color: white;
+                justify-content: center;
+              "
+            >
+              <i class="fa-solid fa-wand-magic-sparkles"></i> Detect All
+            </button>
+          </div> {% endcomment %}
+
+          {% comment %} <h3>Tools</h3> {% endcomment %}
+          <div class="tools-main">
+            <button class="tool-btn" data-tool="select" title="Select (V)">
+              <i class="fa-solid fa-arrow-pointer"></i>
+            </button>
+            <button class="tool-btn" data-tool="pan" title="Pan (H)">
+              <i class="fa-solid fa-hand"></i>
+            </button>
+            <button class="tool-btn" data-tool="polygon" title="Polygon (P)">
+              <i class="fa-solid fa-draw-polygon"></i>
+            </button>
+            <button
+              class="tool-btn"
+              data-tool="rectangle"
+              title="Rectangle (R)"
+            >
+              <i class="fa-solid fa-vector-square"></i>
+            </button>
+            <button class="tool-btn" data-tool="circle" title="Circle (C)">
+              <i class="fa-solid fa-circle-dot"></i>
+            </button>
+            <button class="tool-btn" data-tool="brush" title="Brush (B)">
+              <i class="fa-solid fa-paintbrush"></i>
+            </button>
+            <button class="tool-btn" data-tool="eraser" title="Eraser (E)">
+              <i class="fa-solid fa-eraser"></i>
+            </button>
+          </div>
+
+          <!-- ... keep your brush options div here ... -->
+          <div class="tool-options">
+            <div id="brush-options" class="tool-option-group hidden">
+              <label for="brush-size"
+                >Size: <span id="brush-size-label">10</span></label
+              >
+              <input
+                type="range"
+                id="brush-size"
+                min="1"
+                max="100"
+                value="10"
+              />
+              <label for="brush-color">Color:</label>
+              <input type="color" id="brush-color" value="#FF33A1" />
+            </div>
+          </div>
+        </div>
+
+        <!-- CANVAS CONTAINER -->
+        <div class="canvas-container">
+          <canvas id="canvas"></canvas>
+        </div>
+
+        <!-- SIDEBAR: Layers and attributes panel -->
+        <div class="sidebar">
+          <h3><i class="fa-solid fa-layer-group"></i> Layers</h3>
+          <ul id="layers-list">
+            <!-- Layers will be dynamically inserted here -->
+          </ul>
+          <div id="attributes-panel" class="hidden">
+            <h3><i class="fa-solid fa-tags"></i> Attributes</h3>
+            <input
+              type="text"
+              id="attr-label"
+              placeholder="Label (e.g., car_1)"
+            />
+            <input
+              type="text"
+              id="attr-class"
+              placeholder="Class (e.g., vehicle)"
+            />
+            <button id="save-attributes">Save Attributes</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <script src="{% static 'annotator/js/fabric.min.js' %}"></script>
     <script src="{% static 'annotator/js/annotation_tool.js' %}"></script>
-</body>
+  </body>
 </html>

@@ -18,3 +18,7 @@ pip install "git+https://github.com/ultralytics/CLIP.git"
 pip wheel mmengine -w ./wheels
 pip wheel mmcv>=2.0.0 -w ./wheels
 pip wheel mmsegmentation>=1.0.0 -w ./wheels
+
+
+AI promt:
+car, asphalt, vegetation, sky
