@@ -9,10 +9,14 @@ import zipfile
 import io
 from django.http import HttpResponse
 import math
-from ultralytics import YOLO
 import numpy as np
 import random
-model = YOLO('yolov8l-seg.pt')  
+from ultralytics import SAM, YOLO
+import torch
+
+# model = YOLO('yolov8l-seg.pt')  
+detector = YOLO('yolov8l-worldv2.pt')
+segmenter = SAM('mobile_sam.pt') 
 
 def index(request):
     images = AnnotatedImage.objects.all().order_by('-uploaded_at')
@@ -267,58 +271,73 @@ def export_coco(request):
     response['Content-Disposition'] = 'attachment; filename="coco_annotations.json"'
     return response
 
-
 def auto_detect(request, image_id):
     try:
         img_obj = AnnotatedImage.objects.get(id=image_id)
         image_path = img_obj.image.path
         
-        print(f"DEBUG: Running High-Quality AI on {image_path}")
-
-        # --- THE FIX IS HERE ---
-        # retina_masks=True:  Generates high-res, smooth polygon boundaries
-        # conf=0.4:           Only keeps objects the AI is 40% sure about (removes noise)
-        # iou=0.5:            Prevents overlapping duplicate boxes
-        # imgsz=1280:         Processes at higher resolution (standard is 640)
+        # 1. Get User Prompt
+        default_prompt = "car, person, tree, cloud, building"
+        user_prompt = request.GET.get('prompt', default_prompt)
+        print(f"DEBUG: Step 1 - Detecting [{user_prompt}] with YOLO-World...")
         
-        results = model(image_path, conf=0.4, iou=0.5, retina_masks=True, imgsz=1280) 
-        result = results[0]
-
+        # 2. Configure YOLO-World
+        custom_classes = [x.strip() for x in user_prompt.split(',')]
+        detector.set_classes(custom_classes)
+        
+        # 3. Run Detection (Find the BOXES)
+        detect_results = detector.predict(image_path, conf=0.15, iou=0.5)
+        det_result = detect_results[0]
+        
         new_annotations = []
-        
-        if result.masks:
-            names = result.names 
+
+        # If we found boxes, pass them to SAM
+        if det_result.boxes:
+            print(f"DEBUG: Step 2 - Found {len(det_result.boxes)} boxes. Refining with SAM...")
             
-            # result.masks.xy returns coordinates mapped to the ORIGINAL image size
-            for i, mask in enumerate(result.masks.xy):
-                
-                # Skip empty or tiny masks that look like glitches
-                if len(mask) < 3: 
-                    continue
+            # Get the boxes from YOLO
+            bboxes = det_result.boxes.xyxy  # format: [x1, y1, x2, y2]
+            
+            # 4. Run Segmentation (SAM) using the boxes as prompts
+            # This tells SAM: "Look exactly inside these boxes and find the shape"
+            seg_results = segmenter(image_path, bboxes=bboxes)
+            seg_result = seg_results[0]
+            
+            # 5. Process the SAM Polygons
+            if seg_result.masks:
+                for i, mask in enumerate(seg_result.masks.xy):
+                    
+                    # Skip glitches
+                    if len(mask) < 3: continue
 
-                # Convert numpy points to [{'x':.., 'y':..}]
-                points = [{'x': float(pt[0]), 'y': float(pt[1])} for pt in mask]
-                
-                cls_id = int(result.boxes.cls[i].item())
-                label_name = names[cls_id]
-                
-                color = "#%06x" % random.randint(0, 0xFFFFFF)
+                    # Convert points
+                    points = [{'x': float(pt[0]), 'y': float(pt[1])} for pt in mask]
+                    
+                    # Get the Label from the YOLO result (Matched by index)
+                    # YOLO box index 'i' corresponds to SAM mask index 'i'
+                    cls_id = int(det_result.boxes.cls[i].item())
+                    if cls_id < len(custom_classes):
+                        label_name = custom_classes[cls_id]
+                    else:
+                        label_name = "object"
 
-                annotation = {
-                    "type": "polygon",
-                    "points": points,
-                    "label": label_name,
-                    "class": "auto-detected",
-                    "stroke": color,
-                    "fill": color + "40", 
-                    "left": 0, 
-                    "top": 0,
-                    "width": 0,
-                    "height": 0
-                }
-                new_annotations.append(annotation)
+                    color = "#%06x" % random.randint(0, 0xFFFFFF)
 
-        print(f"DEBUG: AI found {len(new_annotations)} high-quality objects.")
+                    annotation = {
+                        "type": "polygon",  # Now we have Polygons!
+                        "points": points,
+                        "label": label_name,
+                        "class": "auto-detected",
+                        "stroke": color,
+                        "fill": color + "40", 
+                        "left": 0,
+                        "top": 0,
+                        "width": 0,
+                        "height": 0
+                    }
+                    new_annotations.append(annotation)
+
+        print(f"DEBUG: Success! Generated {len(new_annotations)} polygons.")
         return JsonResponse({'success': True, 'annotations': new_annotations})
 
     except Exception as e:

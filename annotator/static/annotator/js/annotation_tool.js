@@ -5,23 +5,20 @@ document.addEventListener("DOMContentLoaded", () => {
   const canvas = new fabric.Canvas("canvas", {
     width: window.innerWidth - 300,
     height: window.innerHeight - 50,
-    backgroundColor: "#222", // Darker background for better contrast
+    backgroundColor: "#222",
     selection: true,
     fireRightClick: true,
     stopContextMenu: true,
   });
 
-  // State Variables
+  // Global Variables
   let currentTool = "select";
   let isDrawingShape = false;
   let activeImageId = null;
   let currentObject = null;
+  let currentImageScale = { x: 1, y: 1 }; // Track image stretching
 
-  // *** NEW: Track Image Scaling ***
-  // This ensures AI shapes align perfectly even if image is stretched
-  let currentImageScale = { x: 1, y: 1 };
-
-  // Helpers
+  // Drawing Helpers
   let origX, origY;
   let polygon = { active: false, points: [], lines: [], previewLine: null };
   let isPanning = false;
@@ -29,35 +26,116 @@ document.addEventListener("DOMContentLoaded", () => {
   let history = [];
   let historyIndex = -1;
 
-  // --- 2. IMAGE UPLOAD LOGIC (With Scaling Fix) ---
+  // --- 2. POLYGON EDITING LOGIC (The New Feature) ---
+  // This allows you to move individual points of the AI polygons
+  function polygonPositionHandler(dim, finalMatrix, fabricObject) {
+    var x = fabricObject.points[this.pointIndex].x - fabricObject.pathOffset.x,
+      y = fabricObject.points[this.pointIndex].y - fabricObject.pathOffset.y;
+    return fabric.util.transformPoint(
+      { x: x, y: y },
+      fabric.util.multiplyTransformMatrices(
+        fabricObject.canvas.viewportTransform,
+        fabricObject.calcTransformMatrix()
+      )
+    );
+  }
+
+  function actionHandler(eventData, transform, x, y) {
+    var polygon = transform.target,
+      currentControl = polygon.controls[polygon.__corner],
+      mouseLocalPosition = polygon.toLocalPoint(
+        new fabric.Point(x, y),
+        "center",
+        "center"
+      ),
+      polygonBaseSize = polygon._getNonTransformedDimensions(),
+      size = polygon._getTransformedDimensions(0, 0),
+      finalPointPosition = {
+        x:
+          (mouseLocalPosition.x * polygonBaseSize.x) / size.x +
+          polygon.pathOffset.x,
+        y:
+          (mouseLocalPosition.y * polygonBaseSize.y) / size.y +
+          polygon.pathOffset.y,
+      };
+    polygon.points[currentControl.pointIndex] = finalPointPosition;
+    return true;
+  }
+
+  function anchorWrapper(anchorIndex, fn) {
+    return function (eventData, transform, x, y) {
+      var fabricObject = transform.target,
+        absolutePoint = fabric.util.transformPoint(
+          {
+            x: fabricObject.points[anchorIndex].x - fabricObject.pathOffset.x,
+            y: fabricObject.points[anchorIndex].y - fabricObject.pathOffset.y,
+          },
+          fabricObject.calcTransformMatrix()
+        ),
+        actionPerformed = fn(eventData, transform, x, y),
+        newDim = fabricObject._setPositionDimensions({}),
+        polygonBaseSize = fabricObject._getNonTransformedDimensions(),
+        newX =
+          (fabricObject.points[anchorIndex].x - fabricObject.pathOffset.x) /
+          polygonBaseSize.x,
+        newY =
+          (fabricObject.points[anchorIndex].y - fabricObject.pathOffset.y) /
+          polygonBaseSize.y;
+      fabricObject.setPositionByOrigin(absolutePoint, newX + 0.5, newY + 0.5);
+      return actionPerformed;
+    };
+  }
+
+  function editPolygon(poly) {
+    canvas.setActiveObject(poly);
+    poly.edit = !poly.edit;
+    if (poly.edit) {
+      var lastControl = poly.points.length - 1;
+      poly.cornerStyle = "circle";
+      poly.cornerColor = "rgba(0,0,255,0.5)";
+      poly.controls = poly.points.reduce(function (acc, point, index) {
+        acc["p" + index] = new fabric.Control({
+          positionHandler: polygonPositionHandler,
+          actionHandler: anchorWrapper(
+            index > 0 ? index - 1 : lastControl,
+            actionHandler
+          ),
+          actionName: "modifyPolygon",
+          pointIndex: index,
+        });
+        return acc;
+      }, {});
+    } else {
+      poly.cornerColor = "white";
+      poly.cornerStyle = "rect";
+      poly.controls = fabric.Object.prototype.controls;
+    }
+    poly.hasBorders = !poly.edit;
+    canvas.requestRenderAll();
+  }
+
+  // --- 3. IMAGE UPLOAD ---
   const imageUpload = document.getElementById("image-upload");
   if (imageUpload) {
     imageUpload.addEventListener("change", (e) => {
       const file = e.target.files[0];
       if (!file) return;
-
       const formData = new FormData();
       formData.append("image", file);
 
       fetch("/upload/", { method: "POST", body: formData })
-        .then((response) => response.json())
+        .then((res) => res.json())
         .then((data) => {
           if (data.error) {
-            alert("Server Error: " + data.error);
+            alert(data.error);
             return;
           }
-
-          console.log("✅ Image uploaded. ID:", data.id);
           activeImageId = data.id;
-
           fabric.Image.fromURL(data.url, (img) => {
             if (!img) return;
-
-            // Calculate Scale to fit screen
+            // Calculate Scale
             const scaleX = canvas.width / img.width;
             const scaleY = canvas.height / img.height;
-
-            // Store this for the AI to use later!
             currentImageScale = { x: scaleX, y: scaleY };
 
             canvas.setBackgroundImage(img, canvas.renderAll.bind(canvas), {
@@ -66,202 +144,127 @@ document.addEventListener("DOMContentLoaded", () => {
               originX: "left",
               originY: "top",
             });
-
-            // Reset history
             history = [];
             historyIndex = -1;
             saveState();
           });
-        })
-        .catch((err) => console.error("❌ Upload Error:", err));
+        });
     });
   }
 
-  // --- 3. AI AUTO-DETECT LOGIC (With Coordinate Scaling) ---
-  const btnAutoDetect = document.getElementById("btn-auto-detect");
+  // --- 4. AI AUTO-DETECT ---
+  // --- 4. AI AUTO-DETECT (YOLO-WORLD) ---
+    // --- 4. AI AUTO-DETECT (YOLO-WORLD + SAM) ---
+    const btnAutoDetect = document.getElementById('btn-auto-detect');
+    const aiInput = document.getElementById('ai-prompt');
 
-  if (btnAutoDetect) {
-    btnAutoDetect.addEventListener("click", () => {
-      if (!activeImageId) {
-        alert("⚠️ Please upload an image first!");
-        return;
-      }
+    if(btnAutoDetect) {
+        btnAutoDetect.addEventListener('click', () => {
+            if(!activeImageId) { alert("⚠️ Upload image first"); return; }
+            
+            // 1. Get text prompt
+            const promptText = aiInput ? aiInput.value : 'car, bike, person, tree, cloud';
+            
+            // 2. UI Feedback
+            document.body.style.cursor = 'wait';
+            btnAutoDetect.disabled = true;
+            btnAutoDetect.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processing...';
+            console.log("🤖 AI processing:", promptText);
 
-      // UI Feedback
-      document.body.style.cursor = "wait";
-      btnAutoDetect.disabled = true;
-      const originalBtnText = btnAutoDetect.innerHTML;
-      btnAutoDetect.innerHTML =
-        '<i class="fa-solid fa-spinner fa-spin"></i> Analyzing...';
+            // 3. Send Request
+            fetch(`/auto-detect/${activeImageId}/?prompt=${encodeURIComponent(promptText)}`)
+            .then(res => res.json())
+            .then(data => {
+                document.body.style.cursor = 'default';
+                btnAutoDetect.disabled = false;
+                btnAutoDetect.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Detect All';
+                
+                if(data.error) { alert(data.error); return; }
+                
+                if (data.annotations.length === 0) {
+                    alert("AI found nothing matching: " + promptText);
+                    return;
+                }
 
-      console.log("🤖 AI is analyzing...");
+                // 4. Draw Results (Handling both Polygons and Rects)
+                data.annotations.forEach(shape => {
+                    let fabricShape;
 
-      fetch(`/auto-detect/${activeImageId}/`)
-        .then((response) => response.json())
-        .then((data) => {
-          document.body.style.cursor = "default";
-          btnAutoDetect.disabled = false;
-          btnAutoDetect.innerHTML = originalBtnText;
+                    if (shape.type === 'polygon') {
+                        // --- A. Handle POLYGONS (from SAM) ---
+                        // Scale every point to match the canvas image size
+                        const scaledPoints = shape.points.map(p => ({
+                            x: p.x * currentImageScale.x,
+                            y: p.y * currentImageScale.y
+                        }));
 
-          if (data.error) {
-            alert("AI Error: " + data.error);
-            return;
-          }
+                        fabricShape = new fabric.Polygon(scaledPoints, {
+                            fill: shape.fill, 
+                            stroke: shape.stroke,
+                            // High-Precision Settings
+                            strokeWidth: 1, 
+                            strokeUniform: true,
+                            objectCaching: false, 
+                            label: shape.label, 
+                            class: 'auto',
+                            transparentCorners: false, 
+                            cornerColor: 'white'
+                        });
 
-          const newShapes = data.annotations;
-          if (newShapes.length === 0) {
-            alert("AI couldn't find objects.");
-            return;
-          }
+                    } else {
+                        // --- B. Handle RECTANGLES (Fallback) ---
+                        const scaledLeft = shape.left * currentImageScale.x;
+                        const scaledTop = shape.top * currentImageScale.y;
+                        const scaledWidth = shape.width * currentImageScale.x;
+                        const scaledHeight = shape.height * currentImageScale.y;
 
-          // DRAW SHAPES (Applying Scale)
-          newShapes.forEach((shape) => {
-            // *** CRITICAL FIX: Scale Points to match Canvas Image ***
-            const scaledPoints = shape.points.map((p) => ({
-              x: p.x * currentImageScale.x,
-              y: p.y * currentImageScale.y,
-            }));
+                        fabricShape = new fabric.Rect({
+                            left: scaledLeft,
+                            top: scaledTop,
+                            width: scaledWidth,
+                            height: scaledHeight,
+                            fill: shape.fill, 
+                            stroke: shape.stroke,
+                            strokeWidth: 2, 
+                            objectCaching: false, 
+                            label: shape.label, 
+                            class: 'auto',
+                            transparentCorners: false
+                        });
+                    }
 
-            const fabricShape = new fabric.Polygon(scaledPoints, {
-              fill: shape.fill,
-              stroke: shape.stroke,
-              strokeWidth: 1, // Thin line for precision
-              strokeUniform: true, // Keep line thin on zoom
-              objectCaching: false, // Sharp edges
-              label: shape.label,
-              class: "auto",
-              perPixelTargetFind: true,
-              cornerColor: "white",
-              cornerSize: 8,
-              transparentCorners: false,
+                    if (fabricShape) {
+                        canvas.add(fabricShape);
+                    }
+                });
+                
+                canvas.renderAll(); 
+                updateLayersList(); 
+                saveState();
+                console.log(`✅ Added ${data.annotations.length} objects.`);
+            })
+            .catch(err => {
+                console.error(err);
+                document.body.style.cursor = 'default';
+                btnAutoDetect.disabled = false;
+                btnAutoDetect.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Detect All';
+                alert("AI Error. Check console.");
             });
-            canvas.add(fabricShape);
-          });
-
-          canvas.renderAll();
-          updateLayersList();
-          saveState();
-          console.log(`✅ Added ${newShapes.length} aligned annotations.`);
-        })
-        .catch((err) => {
-          document.body.style.cursor = "default";
-          btnAutoDetect.disabled = false;
-          btnAutoDetect.innerHTML = originalBtnText;
-          console.error("AI Request Failed:", err);
         });
-    });
-  }
-
-  // --- 4. SAVE BUTTON LOGIC ---
-  const saveBtn = document.getElementById("save-annotations");
-  if (saveBtn) {
-    saveBtn.addEventListener("click", () => {
-      if (!activeImageId) {
-        alert("⚠️ No image selected!");
-        return;
-      }
-
-      // Filter valid objects
-      const objects = canvas
-        .getObjects()
-        .filter((obj) => obj.type !== "image" && obj.evented !== false);
-
-      const annotations = objects.map((obj) => {
-        // We need to UN-SCALE the data before saving to DB
-        // So it matches the original image resolution again
-        let points = null;
-        if (obj.type === "polygon" && obj.points) {
-          points = obj.points.map((p) => ({
-            x: p.x / currentImageScale.x,
-            y: p.y / currentImageScale.y,
-          }));
-        }
-
-        return {
-          type: obj.type,
-          // Coordinates relative to canvas need to be unscaled too if using left/top
-          left: obj.left / currentImageScale.x,
-          top: obj.top / currentImageScale.y,
-          width: (obj.width * obj.scaleX) / currentImageScale.x,
-          height: (obj.height * obj.scaleY) / currentImageScale.y,
-          fill: obj.fill,
-          stroke: obj.stroke,
-          points: points, // Save unscaled points
-          label: obj.label || "untitled",
-          class: obj.class || "default",
-        };
-      });
-
-      fetch(`/save/${activeImageId}/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ annotations: annotations }),
-      })
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.success) alert("✅ Annotations Saved Successfully!");
-          else alert("❌ Save Failed: " + data.error);
-        });
-    });
-  }
-
-  // --- 5. Tool Selection (Boilerplate) ---
-  const brushOptions = document.getElementById("brush-options");
-  const brushSizeInput = document.getElementById("brush-size");
-  const brushColorInput = document.getElementById("brush-color");
-
-  function setActiveTool(toolName) {
-    currentTool = toolName;
-    document
-      .querySelectorAll(".tool-btn")
-      .forEach((btn) =>
-        btn.classList.toggle("active", btn.dataset.tool === toolName)
-      );
-    canvas.isDrawingMode = false;
-    canvas.selection = toolName === "select";
-    canvas.defaultCursor = toolName === "select" ? "default" : "crosshair";
-    canvas.forEachObject((obj) =>
-      obj.set({ selectable: toolName === "select" })
-    );
-    canvas.discardActiveObject().renderAll();
-    if (brushOptions)
-      brushOptions.classList.toggle(
-        "hidden",
-        !["brush", "eraser"].includes(toolName)
-      );
-    if (toolName !== "polygon" && polygon.active) resetPolygonDrawing();
-    if (toolName === "brush") {
-      canvas.isDrawingMode = true;
-      canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
-      canvas.freeDrawingBrush.width = parseInt(brushSizeInput.value, 10) || 10;
-      canvas.freeDrawingBrush.color = brushColorInput.value || "#ff0000";
-    } else if (toolName === "eraser") {
-      canvas.isDrawingMode = true;
-      canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
-      canvas.freeDrawingBrush.width = 30;
-      canvas.freeDrawingBrush.color = "#333333";
     }
-  }
 
-  document
-    .querySelectorAll(".tool-btn")
-    .forEach((btn) =>
-      btn.addEventListener("click", () => setActiveTool(btn.dataset.tool))
-    );
-  if (brushSizeInput)
-    brushSizeInput.addEventListener("input", (e) => {
-      if (canvas.isDrawingMode)
-        canvas.freeDrawingBrush.width = parseInt(e.target.value, 10);
-    });
-  if (brushColorInput)
-    brushColorInput.addEventListener("input", (e) => {
-      if (canvas.isDrawingMode) canvas.freeDrawingBrush.color = e.target.value;
-    });
+  // --- 5. CANVAS EVENTS (Drawing & Editing) ---
 
-  // --- 6. Canvas Drawing Events (Polygon/Rect/Circle/Pan) ---
+  // Double Click to Edit Polygon
+  canvas.on("mouse:dblclick", (opt) => {
+    if (opt.target && opt.target.type === "polygon") {
+      editPolygon(opt.target);
+    }
+  });
+
   canvas.on("mouse:down", (opt) => {
     const pointer = canvas.getPointer(opt.e);
-    const activeColor = brushColorInput ? brushColorInput.value : "#ff0000";
+    const activeColor = document.getElementById("brush-color").value || "#f00";
 
     if (currentTool === "pan" || opt.e.altKey || opt.e.button === 1) {
       isPanning = true;
@@ -269,6 +272,10 @@ document.addEventListener("DOMContentLoaded", () => {
       canvas.defaultCursor = "grabbing";
       return;
     }
+
+    // If editing a polygon, don't start drawing new shapes
+    if (canvas.getActiveObject() && canvas.getActiveObject().edit) return;
+
     if (currentTool === "polygon") {
       if (polygon.active) {
         if (opt.e.button === 2) finalizePolygon();
@@ -283,7 +290,7 @@ document.addEventListener("DOMContentLoaded", () => {
       origX = pointer.x;
       origY = pointer.y;
       let shape;
-      if (currentTool === "rectangle") {
+      if (currentTool === "rectangle")
         shape = new fabric.Rect({
           left: origX,
           top: origY,
@@ -293,9 +300,8 @@ document.addEventListener("DOMContentLoaded", () => {
           stroke: activeColor,
           strokeWidth: 2,
           transparentCorners: false,
-          label: "Rect",
         });
-      } else {
+      else
         shape = new fabric.Circle({
           left: origX,
           top: origY,
@@ -304,9 +310,7 @@ document.addEventListener("DOMContentLoaded", () => {
           stroke: activeColor,
           strokeWidth: 2,
           transparentCorners: false,
-          label: "Circle",
         });
-      }
       canvas.add(shape);
       canvas.setActiveObject(shape);
       currentObject = shape;
@@ -326,10 +330,11 @@ document.addEventListener("DOMContentLoaded", () => {
       if (currentTool === "rectangle") {
         if (origX > pointer.x) currentObject.set({ left: Math.abs(pointer.x) });
         if (origY > pointer.y) currentObject.set({ top: Math.abs(pointer.y) });
-        currentObject.set({ width: Math.abs(origX - pointer.x) });
-        currentObject.set({ height: Math.abs(origY - pointer.y) });
-      }
-      if (currentTool === "circle") {
+        currentObject.set({
+          width: Math.abs(origX - pointer.x),
+          height: Math.abs(origY - pointer.y),
+        });
+      } else if (currentTool === "circle") {
         const radius = Math.abs(origX - pointer.x) / 2;
         currentObject.set({ radius: radius });
         if (origX > pointer.x) currentObject.set({ left: pointer.x });
@@ -356,10 +361,9 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
     }
-    canvas.defaultCursor = currentTool === "select" ? "default" : "crosshair";
   });
 
-  // --- 7. Polygon Helpers ---
+  // --- 6. Polygon Helpers ---
   function startPolygon(pointer) {
     polygon.active = true;
     polygon.points.push({ x: pointer.x, y: pointer.y });
@@ -398,9 +402,10 @@ document.addEventListener("DOMContentLoaded", () => {
       resetPolygonDrawing();
       return;
     }
+    const activeColor = document.getElementById("brush-color").value || "#f00";
     const finalPolygon = new fabric.Polygon(polygon.points, {
-      fill: (brushColorInput.value || "#f00") + "80",
-      stroke: brushColorInput.value || "#f00",
+      fill: activeColor + "80",
+      stroke: activeColor,
       strokeWidth: 2,
       objectCaching: false,
       label: "Polygon",
@@ -421,7 +426,51 @@ document.addEventListener("DOMContentLoaded", () => {
     canvas.renderAll();
   }
 
-  // --- 8. History & Layers ---
+  // --- 7. Save Logic (Un-Scaling) ---
+  document.getElementById("save-annotations")?.addEventListener("click", () => {
+    if (!activeImageId) {
+      alert("No image");
+      return;
+    }
+    const objects = canvas
+      .getObjects()
+      .filter((obj) => obj.type !== "image" && obj.evented !== false);
+
+    const annotations = objects.map((obj) => {
+      let points = null;
+      if (obj.type === "polygon" && obj.points) {
+        // Un-scale points for saving
+        points = obj.points.map((p) => ({
+          x: p.x / currentImageScale.x,
+          y: p.y / currentImageScale.y,
+        }));
+      }
+      return {
+        type: obj.type,
+        left: obj.left / currentImageScale.x,
+        top: obj.top / currentImageScale.y,
+        width: (obj.width * obj.scaleX) / currentImageScale.x,
+        height: (obj.height * obj.scaleY) / currentImageScale.y,
+        fill: obj.fill,
+        stroke: obj.stroke,
+        points: points,
+        label: obj.label || "untitled",
+      };
+    });
+
+    fetch(`/save/${activeImageId}/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ annotations: annotations }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success) alert("Saved!");
+        else alert("Error: " + data.error);
+      });
+  });
+
+  // --- 8. Utils (History, Tool Switching, Resize) ---
   function saveState() {
     if (polygon.active) return;
     const json = canvas.toJSON(["label", "class", "id"]);
@@ -430,78 +479,62 @@ document.addEventListener("DOMContentLoaded", () => {
     history.push(json);
     historyIndex = history.length - 1;
   }
-  function undo() {
-    if (historyIndex > 0) {
-      historyIndex--;
-      canvas.loadFromJSON(history[historyIndex], () => {
-        canvas.renderAll();
-        updateLayersList();
-      });
-    }
-  }
-  function redo() {
-    if (historyIndex < history.length - 1) {
-      historyIndex++;
-      canvas.loadFromJSON(history[historyIndex], () => {
-        canvas.renderAll();
-        updateLayersList();
-      });
-    }
-  }
   function updateLayersList() {
-    const layersList = document.getElementById("layers-list");
-    if (!layersList) return;
-    layersList.innerHTML = "";
-    const objects = canvas
+    const list = document.getElementById("layers-list");
+    if (!list) return;
+    list.innerHTML = "";
+    canvas
       .getObjects()
-      .filter((obj) => obj.evented !== false && obj.type !== "image")
-      .slice()
-      .reverse();
-    objects.forEach((obj, index) => {
-      const li = document.createElement("li");
-      li.className = "layer-item";
-      li.innerHTML = `<input type="color" class="layer-color" value="${
-        obj.stroke || "#ff0000"
-      }"><span class="layer-label" contenteditable="true">${
-        obj.label || obj.type
-      }</span><button class="btn-delete"><i class="fa-solid fa-trash-can"></i></button>`;
-      li.querySelector(".layer-color").addEventListener("input", (e) => {
-        obj.set("stroke", e.target.value);
-        obj.set("fill", e.target.value + "80");
-        canvas.renderAll();
+      .filter((o) => o.type !== "image" && o.evented !== false)
+      .reverse()
+      .forEach((obj) => {
+        const li = document.createElement("li");
+        li.className = "layer-item";
+        li.innerHTML = `<input type="color" class="layer-color" value="${
+          obj.stroke
+        }"><span class="layer-label" contenteditable="true">${
+          obj.label || obj.type
+        }</span><button class="btn-del"><i class="fa-solid fa-trash"></i></button>`;
+        li.querySelector(".layer-color").addEventListener("input", (e) => {
+          obj.set("stroke", e.target.value);
+          obj.set("fill", e.target.value + "80");
+          canvas.renderAll();
+        });
+        li.querySelector(".layer-label").addEventListener("blur", (e) => {
+          obj.set("label", e.target.textContent);
+        });
+        li.querySelector(".btn-del").addEventListener("click", () => {
+          canvas.remove(obj);
+          updateLayersList();
+          saveState();
+        });
+        list.appendChild(li);
       });
-      li.querySelector(".layer-label").addEventListener("blur", (e) => {
-        obj.set("label", e.target.textContent);
-      });
-      li.querySelector(".btn-delete").addEventListener("click", () => {
-        canvas.remove(obj);
-        updateLayersList();
-        saveState();
-      });
-      layersList.appendChild(li);
-    });
   }
 
-  // --- 9. Init ---
+  document.querySelectorAll(".tool-btn").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      currentTool = btn.dataset.tool;
+      document
+        .querySelectorAll(".tool-btn")
+        .forEach((b) => b.classList.toggle("active", b === btn));
+      canvas.isDrawingMode =
+        currentTool === "brush" || currentTool === "eraser";
+      canvas.selection = currentTool === "select";
+      canvas.defaultCursor = currentTool === "select" ? "default" : "crosshair";
+    })
+  );
+
+  // Init
   window.addEventListener("resize", () => {
     canvas.setWidth(window.innerWidth - 300);
     canvas.setHeight(window.innerHeight - 50);
   });
   window.addEventListener("keydown", (e) => {
-    if (["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
-    if (e.key === "v") setActiveTool("select");
-    if (e.key === "p") setActiveTool("polygon");
-    if (e.key === "r") setActiveTool("rectangle");
-    if (e.key === "c") setActiveTool("circle");
-    if (e.ctrlKey && e.key === "z") undo();
     if (e.key === "Delete") {
       canvas.getActiveObjects().forEach((o) => canvas.remove(o));
       canvas.discardActiveObject().renderAll();
       updateLayersList();
-      saveState();
     }
-    if (e.key === "Enter" && polygon.active) finalizePolygon();
   });
-  setActiveTool("select");
-  saveState();
 });

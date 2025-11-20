@@ -42,27 +42,43 @@
         <div class="main-content">
             <!-- TOOLBAR: Annotation tools and their options -->
             <div class="toolbar">
-                <div class="tools-main">
-                    <button class="tool-btn" data-tool="select" title="Select (V)"><i class="fa-solid fa-arrow-pointer"></i></button>
-                    <button class="tool-btn" data-tool="pan" title="Pan/Hand (H)"><i class="fa-solid fa-hand"></i></button>
-                    <button class="tool-btn" data-tool="polygon" title="Polygon (P)"><i class="fa-solid fa-draw-polygon"></i></button>
-                    <button class="tool-btn" data-tool="brush" title="Brush (B)"><i class="fa-solid fa-paintbrush"></i></button>
-                    <button class="tool-btn" data-tool="rectangle" title="Rectangle (R)"><i class="fa-solid fa-vector-square"></i></button>
-                    <button class="tool-btn" data-tool="circle" title="Circle (C)"><i class="fa-solid fa-circle-dot"></i></button>
-                    <button class="tool-btn" data-tool="eraser" title="Eraser (E)"><i class="fa-solid fa-eraser"></i></button>
-                    <button class="tool-btn" id="btn-auto-detect" title="Auto-Detect Objects (AI)">
-                        <i class="fa-solid fa-wand-magic-sparkles"></i>
-                    </button>
-                </div>
-                <div class="tool-options">
-                    <div id="brush-options" class="tool-option-group hidden">
-                        <label for="brush-size">Size: <span id="brush-size-label">10</span></label>
-                        <input type="range" id="brush-size" min="1" max="100" value="10">
-                        <label for="brush-color">Color:</label>
-                        <input type="color" id="brush-color" value="#FF33A1">
-                    </div>
-                </div>
-            </div>
+    <h3>AI Tools</h3>
+    
+    <!-- THE MAGIC INPUT BOX -->
+    <div style="background: #2a2a2a; padding: 10px; border-radius: 6px; margin-bottom: 15px; border: 1px solid #444;">
+        <label style="font-size: 11px; color: #aaa; display: block; margin-bottom: 5px;">Find Objects (comma separated):</label>
+        
+        <textarea id="ai-prompt" rows="3" 
+            style="width: 100%; background: #333; color: white; border: 1px solid #555; padding: 5px; border-radius: 4px; font-size: 12px; resize: vertical;"
+        >car, bike, person, tree, cloud</textarea>
+        
+        <button class="tool-btn primary" id="btn-auto-detect" title="Run Auto-Detect" 
+                style="width: 100%; margin-top: 8px; background: #3b82f6; color: white; justify-content: center;">
+            <i class="fa-solid fa-wand-magic-sparkles"></i> Detect All
+        </button>
+    </div>
+
+    <h3>Manual Tools</h3>
+    <div class="tools-main">
+        <button class="tool-btn" data-tool="select" title="Select (V)"><i class="fa-solid fa-arrow-pointer"></i></button>
+        <button class="tool-btn" data-tool="pan" title="Pan (H)"><i class="fa-solid fa-hand"></i></button>
+        <button class="tool-btn" data-tool="polygon" title="Polygon (P)"><i class="fa-solid fa-draw-polygon"></i></button>
+        <button class="tool-btn" data-tool="rectangle" title="Rectangle (R)"><i class="fa-solid fa-vector-square"></i></button>
+        <button class="tool-btn" data-tool="circle" title="Circle (C)"><i class="fa-solid fa-circle-dot"></i></button>
+        <button class="tool-btn" data-tool="brush" title="Brush (B)"><i class="fa-solid fa-paintbrush"></i></button>
+        <button class="tool-btn" data-tool="eraser" title="Eraser (E)"><i class="fa-solid fa-eraser"></i></button>
+    </div>
+    
+    <!-- ... keep your brush options div here ... -->
+    <div class="tool-options">
+        <div id="brush-options" class="tool-option-group hidden">
+            <label for="brush-size">Size: <span id="brush-size-label">10</span></label>
+            <input type="range" id="brush-size" min="1" max="100" value="10">
+            <label for="brush-color">Color:</label>
+            <input type="color" id="brush-color" value="#FF33A1">
+        </div>
+    </div>
+</div>
 
             <!-- CANVAS CONTAINER -->
             <div class="canvas-container">

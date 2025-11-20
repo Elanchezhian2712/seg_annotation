@@ -13,6 +13,7 @@ pip download torch torchvision torchaudio --index-url https://download.pytorch.o
 
 pip wheel "git+https://github.com/facebookresearch/detectron2.git" --no-deps -w ./wheels
 
+pip install "git+https://github.com/ultralytics/CLIP.git"
 
 pip wheel mmengine -w ./wheels
 pip wheel mmcv>=2.0.0 -w ./wheels
