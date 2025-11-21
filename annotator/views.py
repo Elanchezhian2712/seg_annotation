@@ -29,7 +29,6 @@ def upload_image(request):
     print(f"DEBUG: MEDIA_ROOT setting is: {settings.MEDIA_ROOT}")
     
     if request.method == 'POST':
-        # Check if file is in request
         if 'image' not in request.FILES:
             print("ERROR: No 'image' key found in request.FILES")
             return JsonResponse({'error': 'No image provided'}, status=400)
@@ -38,19 +37,15 @@ def upload_image(request):
         print(f"DEBUG: File received: {image_file.name} (Size: {image_file.size} bytes)")
 
         try:
-            # create the database record
             annotated_image = AnnotatedImage.objects.create(image=image_file)
             
-            # Check where it saved
             full_path = annotated_image.image.path
             print(f"DEBUG: Database thinks file is at: {full_path}")
             
-            # Check if file actually exists on disk
             if os.path.exists(full_path):
                 print("SUCCESS: File verified on disk!")
             else:
                 print("CRITICAL FAILURE: File was saved to DB but NOT found on disk.")
-                # Try to list the directory to see what IS there
                 dir_path = os.path.dirname(full_path)
                 if os.path.exists(dir_path):
                     print(f"DEBUG: Content of {dir_path}: {os.listdir(dir_path)}")
@@ -80,7 +75,6 @@ def save_annotations(request, image_id):
 
 
 
-# --- HELPER: Convert any shape to a list of points ---
 def get_polygon_points(ann):
     """
     Converts Fabric.js objects (rect, circle, polygon) into a list of [x, y] points.
@@ -90,20 +84,15 @@ def get_polygon_points(ann):
     
     left = ann.get('left', 0)
     top = ann.get('top', 0)
-    # Fabric stores dimensions scaled
     width = ann.get('width', 0) 
     height = ann.get('height', 0)
 
     if shape_type == 'polygon':
-        # Fabric stores polygon points relative to the object center/left.
-        # We need to map them to absolute image coordinates if they aren't already.
-        # Note: In our JS implementation, we stored absolute points in 'points'.
         raw_points = ann.get('points', [])
         for p in raw_points:
             points.append([p['x'], p['y']])
 
     elif shape_type == 'rect' or shape_type == 'rectangle':
-        # Convert Rect to 4 points (TL, TR, BR, BL)
         points = [
             [left, top],
             [left + width, top],
@@ -112,7 +101,6 @@ def get_polygon_points(ann):
         ]
 
     elif shape_type == 'circle':
-        # Approximate circle with 16 points
         radius = ann.get('radius', width/2)
         center_x = left + radius
         center_y = top + radius
@@ -126,25 +114,20 @@ def get_polygon_points(ann):
 
 # --- EXPORT: YOLO FORMAT (Segmentation) ---
 def export_yolo(request):
-    # 1. Collect all unique classes to assign IDs (0, 1, 2...)
     all_images = AnnotatedImage.objects.exclude(annotations__isnull=True).exclude(annotations__exact='')
     
     class_map = {}
     class_id_counter = 0
     
-    # Create a ZIP file in memory
     zip_buffer = io.BytesIO()
     
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
         
-        # Iterate over every image
         for img_obj in all_images:
             try:
                 data = json.loads(img_obj.annotations)
                 if not data: continue
                 
-                # Open image file to get real dimensions
-                # (We need this to normalize coordinates to 0-1)
                 with img_obj.image.open() as pil_img:
                     img_w, img_h = pil_img.width, pil_img.height
 
@@ -153,7 +136,6 @@ def export_yolo(request):
                 for ann in data:
                     label = ann.get('label', 'default').lower().strip()
                     
-                    # Assign ID if new label
                     if label not in class_map:
                         class_map[label] = class_id_counter
                         class_id_counter += 1
@@ -161,30 +143,25 @@ def export_yolo(request):
                     cls_id = class_map[label]
                     points = get_polygon_points(ann)
                     
-                    # Normalize points (x/W, y/H)
                     normalized_points = []
                     for pt in points:
-                        nx = max(0, min(1, pt[0] / img_w)) # Clamp between 0-1
+                        nx = max(0, min(1, pt[0] / img_w)) 
                         ny = max(0, min(1, pt[1] / img_h))
                         normalized_points.extend([f"{nx:.6f}", f"{ny:.6f}"])
                     
                     if normalized_points:
-                        # YOLO Format: <class-id> <x1> <y1> <x2> <y2> ...
                         line = f"{cls_id} " + " ".join(normalized_points)
                         yolo_lines.append(line)
                 
-                # Write .txt file for this image
                 txt_filename = os.path.splitext(os.path.basename(img_obj.image.name))[0] + ".txt"
                 zf.writestr(txt_filename, "\n".join(yolo_lines))
                 
             except Exception as e:
                 print(f"Skipping image {img_obj.id}: {e}")
 
-        # Write classes.txt
         classes_content = "\n".join([k for k, v in sorted(class_map.items(), key=lambda item: item[1])])
         zf.writestr("classes.txt", classes_content)
 
-    # Return ZIP download
     zip_buffer.seek(0)
     response = HttpResponse(zip_buffer, content_type='application/zip')
     response['Content-Disposition'] = 'attachment; filename="yolo_dataset.zip"'
@@ -197,7 +174,7 @@ def export_coco(request):
     categories = []
     
     class_map = {}
-    class_id_counter = 1 # COCO starts at 1 usually
+    class_id_counter = 1
     ann_id_counter = 1
     
     all_db_images = AnnotatedImage.objects.exclude(annotations__isnull=True)
@@ -227,7 +204,6 @@ def export_coco(request):
                     class_id_counter += 1
                 
                 points = get_polygon_points(ann)
-                # COCO segmentation is [x1, y1, x2, y2, ...] flat list
                 segmentation = []
                 x_coords = []
                 y_coords = []
@@ -239,7 +215,6 @@ def export_coco(request):
                 
                 if not x_coords: continue
 
-                # Bounding Box [x, y, width, height]
                 min_x = min(x_coords)
                 min_y = min(y_coords)
                 box_w = max(x_coords) - min_x
@@ -250,7 +225,7 @@ def export_coco(request):
                     "image_id": img_obj.id,
                     "category_id": class_map[label],
                     "segmentation": [segmentation],
-                    "area": box_w * box_h, # Simplified area
+                    "area": box_w * box_h, 
                     "bbox": [min_x, min_y, box_w, box_h],
                     "iscrowd": 0
                 }
@@ -276,45 +251,36 @@ def auto_detect(request, image_id):
         img_obj = AnnotatedImage.objects.get(id=image_id)
         image_path = img_obj.image.path
         
-        # 1. Get User Prompt
         default_prompt = "car, person, tree, cloud, building"
         user_prompt = request.GET.get('prompt', default_prompt)
         print(f"DEBUG: Step 1 - Detecting [{user_prompt}] with YOLO-World...")
         
-        # 2. Configure YOLO-World
+
         custom_classes = [x.strip() for x in user_prompt.split(',')]
         detector.set_classes(custom_classes)
         
-        # 3. Run Detection (Find the BOXES)
+    
         detect_results = detector.predict(image_path, conf=0.15, iou=0.5)
         det_result = detect_results[0]
         
         new_annotations = []
 
-        # If we found boxes, pass them to SAM
         if det_result.boxes:
             print(f"DEBUG: Step 2 - Found {len(det_result.boxes)} boxes. Refining with SAM...")
             
-            # Get the boxes from YOLO
-            bboxes = det_result.boxes.xyxy  # format: [x1, y1, x2, y2]
-            
-            # 4. Run Segmentation (SAM) using the boxes as prompts
-            # This tells SAM: "Look exactly inside these boxes and find the shape"
+            bboxes = det_result.boxes.xyxy 
+
             seg_results = segmenter(image_path, bboxes=bboxes)
             seg_result = seg_results[0]
-            
-            # 5. Process the SAM Polygons
+
             if seg_result.masks:
                 for i, mask in enumerate(seg_result.masks.xy):
                     
-                    # Skip glitches
+
                     if len(mask) < 3: continue
 
-                    # Convert points
                     points = [{'x': float(pt[0]), 'y': float(pt[1])} for pt in mask]
                     
-                    # Get the Label from the YOLO result (Matched by index)
-                    # YOLO box index 'i' corresponds to SAM mask index 'i'
                     cls_id = int(det_result.boxes.cls[i].item())
                     if cls_id < len(custom_classes):
                         label_name = custom_classes[cls_id]
@@ -324,7 +290,7 @@ def auto_detect(request, image_id):
                     color = "#%06x" % random.randint(0, 0xFFFFFF)
 
                     annotation = {
-                        "type": "polygon",  # Now we have Polygons!
+                        "type": "polygon",  
                         "points": points,
                         "label": label_name,
                         "class": "auto-detected",
