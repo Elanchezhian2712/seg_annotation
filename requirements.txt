@@ -17,6 +17,8 @@ PyYAML
 requests
 timm
 shapely
+pycocotools 
+pyyaml
 
 # --- 3. Segmentation Libraries (Standard) ---
 segmentation-models-pytorch

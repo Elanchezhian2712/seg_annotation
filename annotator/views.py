@@ -17,6 +17,11 @@ import os
 import re
 import base64
 from django.core.files.base import ContentFile
+import yaml 
+from pycocotools import mask as mask_utils 
+from PIL import Image 
+import numpy as np
+
 
 # model = YOLO('yolov8l-seg.pt')  
 detector = YOLO('yolov8l-worldv2.pt')
@@ -104,62 +109,131 @@ def get_polygon_points(ann):
 
     return points
 
-# --- EXPORT: YOLO FORMAT (Segmentation) ---
-def export_yolo(request):
-    all_images = AnnotatedImage.objects.exclude(annotations__isnull=True).exclude(annotations__exact='')
+
+
+# --- HELPER: Calculate Tight Bounding Box ---
+def get_bbox_from_points(points):
+    """
+    Calculates [x, y, width, height] from a list of dictionary points [{'x':1,'y':1},...].
+    """
+    if not points:
+        return [0, 0, 0, 0]
     
-    class_map = {}
-    class_id_counter = 0
+    # Handle both dict format and list format
+    xs = [p['x'] if isinstance(p, dict) else p[0] for p in points]
+    ys = [p['y'] if isinstance(p, dict) else p[1] for p in points]
+    
+    x_min = min(xs)
+    y_min = min(ys)
+    x_max = max(xs)
+    y_max = max(ys)
+    
+    return [x_min, y_min, x_max - x_min, y_max - y_min]
+
+# --- HELPER: Convert PNG Mask to COCO RLE ---
+def png_to_rle(mask_path):
+    """
+    Reads a binary PNG mask from disk and converts it to COCO RLE format.
+    """
+    try:
+        # Convert absolute path if necessary, or assume relative to MEDIA_ROOT
+        if not os.path.exists(mask_path):
+             # Try finding it relative to project root if path is just /media/...
+             if mask_path.startswith('/'):
+                 mask_path = mask_path.lstrip('/')
+        
+        if not os.path.exists(mask_path):
+            return None
+
+        # Open image and convert to binary
+        mask_img = np.array(Image.open(mask_path).convert("L"))
+        binary_mask = (mask_img > 0).astype(np.uint8)
+        
+        # Encode
+        rle = mask_utils.encode(np.asfortranarray(binary_mask))
+        # Decode bytes to string for JSON serialization
+        rle['counts'] = rle['counts'].decode('utf-8')
+        return rle
+    except Exception as e:
+        print(f"RLE Conversion Error for {mask_path}: {e}")
+        return None
+
+# --- EXPORT: YOLO FORMAT (Production Ready) ---
+def export_yolo(request):
+    all_images = AnnotatedImage.objects.exclude(annotations__isnull=True)
     
     zip_buffer = io.BytesIO()
+    class_map = {}
+    class_id_counter = 0
     
     with zipfile.ZipFile(zip_buffer, 'w') as zf:
         
         for img_obj in all_images:
             try:
-                data = json.loads(img_obj.annotations)
-                if not data: continue
-                
-                with img_obj.image.open() as pil_img:
-                    img_w, img_h = pil_img.width, pil_img.height
+                db_data = json.loads(img_obj.annotations)
+                if not db_data or 'annotations' not in db_data: continue
 
+                # 1. Write Image File to Zip (images/filename.jpg)
+                img_filename = os.path.basename(img_obj.image.name)
+                zf.write(img_obj.image.path, arcname=f"images/{img_filename}")
+                
+                img_w = db_data.get('imagewidth')
+                img_h = db_data.get('imageheight')
+                
                 yolo_lines = []
                 
-                for ann in data:
-                    label = ann.get('label', 'default').lower().strip()
+                for ann in db_data.get('annotations', []):
+                    label = ann.get('label', 'unknown').lower().strip()
                     
+                    # Manage Classes
                     if label not in class_map:
                         class_map[label] = class_id_counter
                         class_id_counter += 1
-                    
                     cls_id = class_map[label]
-                    points = get_polygon_points(ann)
                     
+                    # Get Points
+                    points = ann.get('points', [])
+                    if not points: continue
+
+                    # Normalize Points (0.0 - 1.0)
                     normalized_points = []
                     for pt in points:
-                        nx = max(0, min(1, pt[0] / img_w)) 
-                        ny = max(0, min(1, pt[1] / img_h))
+                        # Handle both {x,y} and [x,y] formats
+                        px = pt['x'] if isinstance(pt, dict) else pt[0]
+                        py = pt['y'] if isinstance(pt, dict) else pt[1]
+                        
+                        nx = max(0, min(1, px / img_w))
+                        ny = max(0, min(1, py / img_h))
                         normalized_points.extend([f"{nx:.6f}", f"{ny:.6f}"])
                     
                     if normalized_points:
                         line = f"{cls_id} " + " ".join(normalized_points)
                         yolo_lines.append(line)
                 
-                txt_filename = os.path.splitext(os.path.basename(img_obj.image.name))[0] + ".txt"
-                zf.writestr(txt_filename, "\n".join(yolo_lines))
+                # 2. Write Label File to Zip (labels/filename.txt)
+                txt_filename = os.path.splitext(img_filename)[0] + ".txt"
+                zf.writestr(f"labels/{txt_filename}", "\n".join(yolo_lines))
                 
             except Exception as e:
-                print(f"Skipping image {img_obj.id}: {e}")
+                print(f"YOLO Export Error {img_obj.id}: {e}")
 
-        classes_content = "\n".join([k for k, v in sorted(class_map.items(), key=lambda item: item[1])])
-        zf.writestr("classes.txt", classes_content)
+        # 3. Generate data.yaml
+        # Create reverse map for YAML (id: name)
+        names_map = {v: k for k, v in class_map.items()}
+        yaml_data = {
+            'path': '../datasets/custom', # Placeholder path
+            'train': 'images',
+            'val': 'images',
+            'names': names_map
+        }
+        zf.writestr("data.yaml", yaml.dump(yaml_data, sort_keys=False))
 
     zip_buffer.seek(0)
     response = HttpResponse(zip_buffer, content_type='application/zip')
-    response['Content-Disposition'] = 'attachment; filename="yolo_dataset.zip"'
+    response['Content-Disposition'] = 'attachment; filename="yolo_dataset_v8_seg.zip"'
     return response
 
-# --- EXPORT: COCO FORMAT (Mask R-CNN) ---
+# --- EXPORT: COCO FORMAT (With RLE & Correct BBox) ---
 def export_coco(request):
     images = []
     annotations = []
@@ -169,69 +243,69 @@ def export_coco(request):
     class_id_counter = 1
     ann_id_counter = 1
     
-    # Get all images that have annotations
     all_db_images = AnnotatedImage.objects.exclude(annotations__isnull=True)
 
     for img_obj in all_db_images:
         try:
-            # Load your CUSTOM JSON structure
             db_data = json.loads(img_obj.annotations)
             
-            # 1. Setup Image Info
-            # Note: Your JSON stores width/height as "imagewidth", check keys carefully
-            width = db_data.get('imagewidth', 100)
-            height = db_data.get('imageheight', 100)
-            
+            # 1. Image Info
             image_info = {
                 "id": img_obj.id,
                 "file_name": os.path.basename(img_obj.image.name),
-                "width": width,
-                "height": height
+                "width": db_data.get('imagewidth'),
+                "height": db_data.get('imageheight'),
+                "date_captured": str(img_obj.uploaded_at), # Optional but nice
+                "license": 1,
             }
             images.append(image_info)
             
-            # 2. Loop through YOUR "annotations" list
-            annot_list = db_data.get('annotations', [])
-            
-            for ann in annot_list:
+            # 2. Process Annotations
+            for ann in db_data.get('annotations', []):
                 label = ann.get('label', 'unknown').lower().strip()
                 
-                # Handle Categories
                 if label not in class_map:
                     class_map[label] = class_id_counter
                     categories.append({"id": class_id_counter, "name": label, "supercategory": "none"})
                     class_id_counter += 1
                 
-                # Get Coordinates (Bounding Box)
-                coords = ann.get('coordinates', {})
-                x = coords.get('x', 0)
-                y = coords.get('y', 0)
-                w = coords.get('width', 0)
-                h = coords.get('height', 0)
-
-                # Get Segmentation (Points)
+                # A. Get Points & Calculate Tight BBox
                 points_data = ann.get('points', [])
-                segmentation = []
+                if not points_data: continue
                 
-                # Convert [{x:1, y:1}, {x:2, y:2}] -> [1, 1, 2, 2]
-                if points_data:
-                    for pt in points_data:
-                        segmentation.extend([pt['x'], pt['y']])
-                else:
-                    # If no points (e.g. Rectangle), make a box polygon
-                    segmentation = [
-                        x, y, 
-                        x+w, y, 
-                        x+w, y+h, 
-                        x, y+h
-                    ]
+                # Calculate bbox from points (More accurate than frontend coords)
+                x, y, w, h = get_bbox_from_points(points_data)
+                
+                # B. Prepare Segmentation (Polygon)
+                # COCO Polygon format: [[x1, y1, x2, y2, ...]]
+                poly_seg = []
+                for pt in points_data:
+                    px = pt['x'] if isinstance(pt, dict) else pt[0]
+                    py = pt['y'] if isinstance(pt, dict) else pt[1]
+                    poly_seg.extend([px, py])
+                
+                # C. Prepare Segmentation (RLE) - OPTIONAL BUT POWERFUL
+                # This is what Mask R-CNN often prefers for pixel-perfect training
+                segmentation_output = [poly_seg] # Default to polygon
+                
+                mask_url = ann.get('masked_image')
+                if mask_url:
+                    # Convert URL to filesystem path
+                    # Assumes MEDIA_ROOT is set correctly in settings
+                    # E.g., /media/individual_masks/... -> /var/www/media/individual_masks/...
+                    relative_path = mask_url.replace(settings.MEDIA_URL, '')
+                    full_mask_path = os.path.join(settings.MEDIA_ROOT, relative_path)
+                    
+                    rle_data = png_to_rle(full_mask_path)
+                    if rle_data:
+                        segmentation_output = rle_data # Override polygon with RLE if successful
 
                 coco_ann = {
                     "id": ann_id_counter,
                     "image_id": img_obj.id,
                     "category_id": class_map[label],
-                    "segmentation": [segmentation],
-                    "area": w * h,
+                    "segmentation": segmentation_output,
+                    "area": w * h, # Area is roughly w*h, or calculate polygon area if needed
                     "bbox": [x, y, w, h],
                     "iscrowd": 0
                 }
@@ -239,18 +313,25 @@ def export_coco(request):
                 ann_id_counter += 1
 
         except Exception as e:
-            print(f"Error processing image {img_obj.id}: {e}")
+            print(f"COCO Export Error {img_obj.id}: {e}")
 
     coco_output = {
-        "info": {"description": "Custom Dataset"},
+        "info": {
+            "description": "Custom AI Dataset",
+            "year": 2025,
+            "version": "1.0",
+            "contributor": "Annotation Tool"
+        },
+        "licenses": [{"id": 1, "name": "Proprietary"}],
         "images": images,
         "annotations": annotations,
         "categories": categories
     }
 
     response = HttpResponse(json.dumps(coco_output, indent=4), content_type='application/json')
-    response['Content-Disposition'] = 'attachment; filename="coco_annotations.json"'
+    response['Content-Disposition'] = 'attachment; filename="coco_dataset_v2.json"'
     return response
+
 
 def auto_detect(request, image_id):
     try:
