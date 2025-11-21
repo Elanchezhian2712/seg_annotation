@@ -506,11 +506,16 @@ document.addEventListener("DOMContentLoaded", () => {
     canvas.renderAll();
   }
 
-  // --- 8. Save Logic (Unified) ---
-  document.getElementById("save-annotations")?.addEventListener("click", () => {
+  // --- 8. Save Logic (Unified & Individual Masks) ---
+  document.getElementById("save-annotations")?.addEventListener("click", async () => {
     if (!activeImageId) {
-      alert("No image uploaded!");
+      alert("⚠️ No image uploaded!");
       return;
+    }
+
+    if (polygon.active) {
+        alert("⚠️ You have an unfinished polygon! Right-Click or press ENTER to finish it before saving.");
+        return;
     }
 
     const saveBtn = document.getElementById("save-annotations");
@@ -519,110 +524,122 @@ document.addEventListener("DOMContentLoaded", () => {
     saveBtn.disabled = true;
 
     try {
-        // 1. Get Original Image Dimensions (for JSON meta)
+        const validShapes = canvas.getObjects().filter(obj => 
+            (obj.type === "polygon" || obj.type === "rect" || obj.type === "path" || obj.type === "circle") && 
+            obj.evented !== false && 
+            obj.visible !== false
+        );
+
+        if (validShapes.length === 0) {
+            const proceed = confirm("⚠️ No shapes found! Saving will result in an empty annotation list. Continue?");
+            if (!proceed) {
+                saveBtn.innerHTML = originalText;
+                saveBtn.disabled = false;
+                return;
+            }
+        }
+
         const bgImage = canvas.backgroundImage;
-        let originalWidth = 0;
-        let originalHeight = 0;
+        let originalWidth = 800; 
+        let originalHeight = 600;
         
         if (bgImage) {
             originalWidth = bgImage.width;
             originalHeight = bgImage.height;
         }
-
-        // 2. Prepare Vector Data (Shapes)
-        const objects = canvas.getObjects().filter((obj) => obj.type !== "image" && obj.evented !== false);
-        const shapes = objects.map((obj) => {
-          let points = null;
-          if (obj.type === "polygon" && obj.points) {
-            points = obj.points.map((p) => ({
-              x: p.x / currentImageScale.x,
-              y: p.y / currentImageScale.y,
-            }));
-          }
-          return {
-            type: obj.type,
-            left: obj.left / currentImageScale.x,
-            top: obj.top / currentImageScale.y,
-            width: (obj.width * obj.scaleX) / currentImageScale.x,
-            height: (obj.height * obj.scaleY) / currentImageScale.y,
-            fill: obj.fill,
-            stroke: obj.stroke,
-            points: points,
-            label: obj.label || "untitled",
-          };
-        });
-
-        // 3. Prepare Images (Base64 Snapshots)
+        
         const multiplier = 1 / currentImageScale.x; 
 
-        // A. Capture Full Image (Photo + Annotation)
-        const fullDataURL = canvas.toDataURL({
-          format: "png",
-          multiplier: multiplier,
-          quality: 0.9,
+        const fullOverlayData = canvas.toDataURL({
+            format: "png",
+            multiplier: multiplier,
+            quality: 0.9
         });
 
-        // B. Capture Mask Only (Pink Shapes on Transparent)
+        const annotationsData = [];
         const originalBgColor = canvas.backgroundColor;
-        
-        canvas.backgroundImage = null;      // Hide Photo
-        canvas.backgroundColor = "transparent"; // Make transparent
-        canvas.renderAll(); 
 
-        const maskDataURL = canvas.toDataURL({
-          format: "png",
-          multiplier: multiplier,
-        });
+        canvas.backgroundImage = null; 
+        canvas.backgroundColor = "transparent"; 
 
-        // Restore background immediately
-        canvas.setBackgroundImage(bgImage, canvas.renderAll.bind(canvas), {
-          scaleX: currentImageScale.x,
-          scaleY: currentImageScale.y,
-          originX: "left",
-          originY: "top",
-        });
+        for (let i = 0; i < validShapes.length; i++) {
+            const currentObj = validShapes[i];
+
+            canvas.getObjects().forEach(obj => obj.visible = false);
+
+            currentObj.visible = true;
+            canvas.renderAll();
+
+            const maskBase64 = canvas.toDataURL({
+                format: "png",
+                multiplier: multiplier
+            });
+
+            const coords = {
+                x: Math.round(currentObj.left / currentImageScale.x),
+                y: Math.round(currentObj.top / currentImageScale.y),
+                width: Math.round((currentObj.width * currentObj.scaleX) / currentImageScale.x),
+                height: Math.round((currentObj.height * currentObj.scaleY) / currentImageScale.y)
+            };
+
+            let points = [];
+            if (currentObj.type === 'polygon' && currentObj.points) {
+                points = currentObj.points.map(p => ({
+                    x: p.x / currentImageScale.x,
+                    y: p.y / currentImageScale.y
+                }));
+            }
+
+            annotationsData.push({
+                label: currentObj.label || "unknown",
+                type: currentObj.type,
+                mask_base64: maskBase64,
+                coordinates: coords,
+                points: points
+            });
+        }
+
+        canvas.getObjects().forEach(obj => obj.visible = true);
+        if (bgImage) {
+            canvas.setBackgroundImage(bgImage, canvas.renderAll.bind(canvas), {
+                scaleX: currentImageScale.x,
+                scaleY: currentImageScale.y,
+                originX: "left", originY: "top"
+            });
+        }
         canvas.backgroundColor = originalBgColor;
         canvas.renderAll();
 
-        // 4. Construct Unified Payload
         const payload = {
             width: originalWidth,
             height: originalHeight,
-            shapes: shapes,
-            mask_data: maskDataURL,
-            full_data: fullDataURL
+            full_overlay_data: fullOverlayData,
+            annotations_data: annotationsData
         };
 
-        // 5. Send to Server
-        fetch(`/save-all/${activeImageId}/`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        })
-          .then((res) => res.json())
-          .then((data) => {
-            saveBtn.innerHTML = originalText;
-            saveBtn.disabled = false;
-            
-            if (data.success) {
-              console.log("✅ Saved Meta:", data.meta);
-              alert("Success! Mask and Annotations linked in Database.");
-            } else {
-              alert("Error: " + data.error);
-            }
-          })
-          .catch((err) => {
-            console.error(err);
-            saveBtn.innerHTML = originalText;
-            saveBtn.disabled = false;
-            alert("Network connection failed.");
-          });
+        const response = await fetch(`/save-all/${activeImageId}/`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
 
-    } catch (e) {
-        console.error("Frontend Error:", e);
+        const result = await response.json();
+
         saveBtn.innerHTML = originalText;
         saveBtn.disabled = false;
-        alert("Client-side error occurred while preparing data.");
+
+        if (result.success) {
+            console.log("✅ Data Saved:", result.data);
+            alert("Success! All masks and data saved.");
+        } else {
+            alert("Server Error: " + result.error);
+        }
+
+    } catch (e) {
+        console.error("Save Error:", e);
+        saveBtn.innerHTML = originalText;
+        saveBtn.disabled = false;
+        alert("Client Error: " + e.message);
     }
   });
 

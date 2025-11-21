@@ -13,7 +13,8 @@ import numpy as np
 import random
 from ultralytics import SAM, YOLO
 import torch
-
+import os
+import re
 import base64
 from django.core.files.base import ContentFile
 
@@ -168,16 +169,19 @@ def export_coco(request):
     class_id_counter = 1
     ann_id_counter = 1
     
+    # Get all images that have annotations
     all_db_images = AnnotatedImage.objects.exclude(annotations__isnull=True)
 
     for img_obj in all_db_images:
         try:
-            data = json.loads(img_obj.annotations)
-            if not data: continue
+            # Load your CUSTOM JSON structure
+            db_data = json.loads(img_obj.annotations)
             
-            with img_obj.image.open() as pil_img:
-                width, height = pil_img.width, pil_img.height
-                
+            # 1. Setup Image Info
+            # Note: Your JSON stores width/height as "imagewidth", check keys carefully
+            width = db_data.get('imagewidth', 100)
+            height = db_data.get('imageheight', 100)
+            
             image_info = {
                 "id": img_obj.id,
                 "file_name": os.path.basename(img_obj.image.name),
@@ -186,38 +190,49 @@ def export_coco(request):
             }
             images.append(image_info)
             
-            for ann in data:
-                label = ann.get('label', 'default').lower().strip()
+            # 2. Loop through YOUR "annotations" list
+            annot_list = db_data.get('annotations', [])
+            
+            for ann in annot_list:
+                label = ann.get('label', 'unknown').lower().strip()
                 
+                # Handle Categories
                 if label not in class_map:
                     class_map[label] = class_id_counter
                     categories.append({"id": class_id_counter, "name": label, "supercategory": "none"})
                     class_id_counter += 1
                 
-                points = get_polygon_points(ann)
-                segmentation = []
-                x_coords = []
-                y_coords = []
-                
-                for pt in points:
-                    segmentation.extend([pt[0], pt[1]])
-                    x_coords.append(pt[0])
-                    y_coords.append(pt[1])
-                
-                if not x_coords: continue
+                # Get Coordinates (Bounding Box)
+                coords = ann.get('coordinates', {})
+                x = coords.get('x', 0)
+                y = coords.get('y', 0)
+                w = coords.get('width', 0)
+                h = coords.get('height', 0)
 
-                min_x = min(x_coords)
-                min_y = min(y_coords)
-                box_w = max(x_coords) - min_x
-                box_h = max(y_coords) - min_y
+                # Get Segmentation (Points)
+                points_data = ann.get('points', [])
+                segmentation = []
                 
+                # Convert [{x:1, y:1}, {x:2, y:2}] -> [1, 1, 2, 2]
+                if points_data:
+                    for pt in points_data:
+                        segmentation.extend([pt['x'], pt['y']])
+                else:
+                    # If no points (e.g. Rectangle), make a box polygon
+                    segmentation = [
+                        x, y, 
+                        x+w, y, 
+                        x+w, y+h, 
+                        x, y+h
+                    ]
+
                 coco_ann = {
                     "id": ann_id_counter,
                     "image_id": img_obj.id,
                     "category_id": class_map[label],
                     "segmentation": [segmentation],
-                    "area": box_w * box_h, 
-                    "bbox": [min_x, min_y, box_w, box_h],
+                    "area": w * h,
+                    "bbox": [x, y, w, h],
                     "iscrowd": 0
                 }
                 annotations.append(coco_ann)
@@ -227,12 +242,12 @@ def export_coco(request):
             print(f"Error processing image {img_obj.id}: {e}")
 
     coco_output = {
+        "info": {"description": "Custom Dataset"},
         "images": images,
         "annotations": annotations,
         "categories": categories
     }
 
-    # Return JSON download
     response = HttpResponse(json.dumps(coco_output, indent=4), content_type='application/json')
     response['Content-Disposition'] = 'attachment; filename="coco_annotations.json"'
     return response
@@ -304,60 +319,78 @@ def auto_detect(request, image_id):
 
 @csrf_exempt
 def save_all_data(request, image_id):
-    """
-    Saves vector data (shapes), generates mask images, 
-    and stores image URLs inside the JSON meta.
-    """
     if request.method == 'POST':
         try:
             img_obj = get_object_or_404(AnnotatedImage, id=image_id)
-            data = json.loads(request.body)
+            req_data = json.loads(request.body)
 
-            # --- 1. SAVE IMAGES (Mask & Full) ---
-            
-            # A. Save Mask File
-            if 'mask_data' in data:
-                format, imgstr = data['mask_data'].split(';base64,') 
+            full_overlay_url = ""
+            if 'full_overlay_data' in req_data and req_data['full_overlay_data']:
+                format, imgstr = req_data['full_overlay_data'].split(';base64,') 
                 ext = format.split('/')[-1]
-                mask_filename = f"mask_{image_id}.{ext}"
-                # Save file content
-                img_obj.mask_file.save(mask_filename, ContentFile(base64.b64decode(imgstr)), save=False)
+                filename = f"full_overlay_{image_id}.{ext}"
+                
+                img_obj.annotated_file.save(filename, ContentFile(base64.b64decode(imgstr)), save=False)
+                full_overlay_url = img_obj.annotated_file.url
 
-            # B. Save Full Annotated Output
-            if 'full_data' in data:
-                format, imgstr = data['full_data'].split(';base64,') 
-                ext = format.split('/')[-1]
-                full_filename = f"annotated_{image_id}.{ext}"
-                img_obj.annotated_file.save(full_filename, ContentFile(base64.b64decode(imgstr)), save=False)
+            processed_annotations = []
+            input_annotations = req_data.get('annotations_data', [])
 
-            # Save the object now so the files are written to disk and URLs are generated
-            img_obj.save()
+            mask_dir = os.path.join(settings.MEDIA_ROOT, 'individual_masks')
+            os.makedirs(mask_dir, exist_ok=True)
 
-            # --- 2. CONSTRUCT JSON WITH URLs ---
-            
-            # Now that files are saved, we can access .url
-            final_json_structure = {
-                "meta": {
-                    "original_width": data.get('width'),
-                    "original_height": data.get('height'),
-                    "mask_image_url": img_obj.mask_file.url if img_obj.mask_file else None,
-                    "full_image_url": img_obj.annotated_file.url if img_obj.annotated_file else None,
-                },
-                "shapes": data.get('shapes', [])
+            for index, item in enumerate(input_annotations):
+                mask_url = ""
+                
+                raw_label = item.get('label', 'unknown')
+                safe_label = re.sub(r'[^a-zA-Z0-9]', '_', raw_label).lower()
+
+                if 'mask_base64' in item and item['mask_base64']:
+                    format, imgstr = item['mask_base64'].split(';base64,')
+                    ext = format.split('/')[-1]
+                    
+                    mask_filename = f"mask_{image_id}_{index}_{safe_label}.{ext}"
+                    file_path = os.path.join(mask_dir, mask_filename)
+                    
+                    with open(file_path, "wb") as f:
+                        f.write(base64.b64decode(imgstr))
+                    
+                    mask_url = f"{settings.MEDIA_URL}individual_masks/{mask_filename}"
+
+                coords = item.get('coordinates', {})
+                points = item.get('points', []) 
+                shape_type = item.get('type', 'polygon')
+
+                entry = {
+                    "label": raw_label,
+                    "type": shape_type,
+                    "masked_image": mask_url,
+                    "coordinates": {
+                        "x": coords.get('x', 0),
+                        "y": coords.get('y', 0),
+                        "width": coords.get('width', 0),
+                        "height": coords.get('height', 0)
+                    },
+                    "points": points 
+                }
+                processed_annotations.append(entry)
+
+            final_json = {
+                "id": img_obj.id,
+                "original_image": img_obj.image.url,
+                "original_fully_masked_image": full_overlay_url,
+                "imagewidth": req_data.get('width'),
+                "imageheight": req_data.get('height'),
+                "annotations": processed_annotations
             }
 
-            # --- 3. SAVE JSON TO DATABASE ---
-            img_obj.annotations = json.dumps(final_json_structure)
+            img_obj.annotations = json.dumps(final_json)
             img_obj.save()
 
-            return JsonResponse({
-                'success': True, 
-                'message': 'All data saved successfully',
-                'meta': final_json_structure['meta']
-            })
+            return JsonResponse({'success': True, 'data': final_json})
 
         except Exception as e:
             print(f"Error saving data: {e}")
             return JsonResponse({'error': str(e)}, status=500)
-            
+
     return JsonResponse({'error': 'Invalid request'}, status=400)
