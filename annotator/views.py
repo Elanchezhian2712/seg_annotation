@@ -14,6 +14,9 @@ import random
 from ultralytics import SAM, YOLO
 import torch
 
+import base64
+from django.core.files.base import ContentFile
+
 # model = YOLO('yolov8l-seg.pt')  
 detector = YOLO('yolov8l-worldv2.pt')
 segmenter = SAM('mobile_sam.pt') 
@@ -60,18 +63,6 @@ def upload_image(request):
 
     return JsonResponse({'error': 'Invalid request'}, status=400)
 
-@csrf_exempt
-def save_annotations(request, image_id):
-    if request.method == 'POST':
-        try:
-            image = get_object_or_404(AnnotatedImage, id=image_id)
-            data = json.loads(request.body)
-            image.set_annotations(data.get('annotations'))
-            image.save()
-            return JsonResponse({'success': True})
-        except Exception as e:
-            return JsonResponse({'error': str(e)}, status=500)
-    return JsonResponse({'error': 'Invalid request method'}, status=400)
 
 
 
@@ -309,3 +300,64 @@ def auto_detect(request, image_id):
     except Exception as e:
         print(f"AI Error: {e}")
         return JsonResponse({'error': str(e)}, status=500)
+
+
+@csrf_exempt
+def save_all_data(request, image_id):
+    """
+    Saves vector data (shapes), generates mask images, 
+    and stores image URLs inside the JSON meta.
+    """
+    if request.method == 'POST':
+        try:
+            img_obj = get_object_or_404(AnnotatedImage, id=image_id)
+            data = json.loads(request.body)
+
+            # --- 1. SAVE IMAGES (Mask & Full) ---
+            
+            # A. Save Mask File
+            if 'mask_data' in data:
+                format, imgstr = data['mask_data'].split(';base64,') 
+                ext = format.split('/')[-1]
+                mask_filename = f"mask_{image_id}.{ext}"
+                # Save file content
+                img_obj.mask_file.save(mask_filename, ContentFile(base64.b64decode(imgstr)), save=False)
+
+            # B. Save Full Annotated Output
+            if 'full_data' in data:
+                format, imgstr = data['full_data'].split(';base64,') 
+                ext = format.split('/')[-1]
+                full_filename = f"annotated_{image_id}.{ext}"
+                img_obj.annotated_file.save(full_filename, ContentFile(base64.b64decode(imgstr)), save=False)
+
+            # Save the object now so the files are written to disk and URLs are generated
+            img_obj.save()
+
+            # --- 2. CONSTRUCT JSON WITH URLs ---
+            
+            # Now that files are saved, we can access .url
+            final_json_structure = {
+                "meta": {
+                    "original_width": data.get('width'),
+                    "original_height": data.get('height'),
+                    "mask_image_url": img_obj.mask_file.url if img_obj.mask_file else None,
+                    "full_image_url": img_obj.annotated_file.url if img_obj.annotated_file else None,
+                },
+                "shapes": data.get('shapes', [])
+            }
+
+            # --- 3. SAVE JSON TO DATABASE ---
+            img_obj.annotations = json.dumps(final_json_structure)
+            img_obj.save()
+
+            return JsonResponse({
+                'success': True, 
+                'message': 'All data saved successfully',
+                'meta': final_json_structure['meta']
+            })
+
+        except Exception as e:
+            print(f"Error saving data: {e}")
+            return JsonResponse({'error': str(e)}, status=500)
+            
+    return JsonResponse({'error': 'Invalid request'}, status=400)
